@@ -3,7 +3,6 @@
   Function for installing an AppSource App in an online Business Central environment
  .Description
   Function for installing an AppSource App in an online Business Central environment
-  Current implementation uses client service to invoke page 2503 and install the app
  .Parameter bcAuthContext
   Authorization Context created by New-BcAuthContext.
  .Parameter environment
@@ -73,7 +72,7 @@ try {
             $operation = Invoke-RestMethod -Method Post -UseBasicParsing -Uri "$($bcContainerHelperConfig.apiBaseUrl.TrimEnd('/'))/admin/v2.6/applications/BusinessCentral/environments/$environment/apps/$appId/install" -Headers $headers -ContentType "application/json" -Body ($body | ConvertTo-Json)
         }
         catch {
-            throw (GetExtenedErrorMessage $_.Exception)
+            throw (GetExtendedErrorMessage $_)
         }
     
         Write-Host "Operation ID $($operation.id)"
@@ -106,7 +105,7 @@ try {
             }
             catch {
                 if ($errCount++ -gt 3) {
-                    throw (GetExtenedErrorMessage $_.Exception)
+                    throw (GetExtendedErrorMessage $_)
                 }
                 $completed = $false
             }

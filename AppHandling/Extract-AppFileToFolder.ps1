@@ -125,7 +125,6 @@ try {
             }
         }
         $appJson += [ordered]@{
-            "showMyCode" = "$($manifest.Package.App.Attributes | Where-Object { $_.name -eq "ShowMyCode" } | % { $_.Value } )" -eq "True"
             "runtime" = $runtime
             "logo" = "$($manifest.Package.App.Attributes | Where-Object { $_.name -eq "Logo" } | % { $_.Value } )".TrimStart('/')
             "url" = "$($manifest.Package.App.Attributes | Where-Object { $_.name -eq "Url" } | % { $_.Value } )"
@@ -137,6 +136,28 @@ try {
             "dependencies" = @()
             "idRanges" = @()
             "features" = @()
+        }
+
+        if ($runtime -lt 8.0)  {
+            $appJson += @{
+                "showMyCode" = "$($manifest.Package.App.Attributes | Where-Object { $_.name -eq "ShowMyCode" } | % { $_.Value } )" -eq "True"
+            }
+        }
+        else {
+            $manifest.Package.ChildNodes | Where-Object { $_.name -eq "ResourceExposurePolicy" } | % { 
+                $xmlResExp = [ordered]@{}
+                $resExp = [ordered]@{}
+                "allowDebugging", "allowDownloadingSource", "includeSourceInSymbolFile" | % {
+                    $prop = $_
+                    if ($xmlResExp.PSObject.Properties.Name -eq $prop) {
+                        $resExp += @{
+                            "$prop" = $xmlResExp."$prop" -eq "true"
+                        }
+                    }
+                }
+                $appJson += @{ "resourceExposurePolicy" = $resExp }
+            }
+       
         }
         if ($runtime -ge 5.0)  {
             $appInsightsKey = $manifest.Package.App.Attributes | Where-Object { $_.name -eq "applicationInsightsKey" } | % { $_.Value } 
@@ -187,7 +208,7 @@ try {
         $manifest.Package.ChildNodes | Where-Object { $_.name -eq "Features" } | % { 
             $_.GetEnumerator() | % {
                 $feature = $_.'#text'
-                'TranslationFile','GenerateCaptions' | % {
+                'ExcludeGeneratedTranslations','GenerateCaptions','GenerateLockedTranslations','NoImplicitWith','TranslationFile' | % {
                     if ($feature -eq $_) {
                         $appJson.features += $_
                     }

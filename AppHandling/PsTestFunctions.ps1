@@ -138,11 +138,16 @@ function Set-RunFalseOnDisabledTests
     foreach($disabledTestMethod in $DisabledTests)
     {
         $disabledTestMethod.method | ForEach-Object {
-            if ($debugMode) {
-                Write-Host "Disabling Test $($disabledTestMethod.codeunitName):$_"
+            if ($disabledTestMethod.codeunitName.IndexOf(',') -ge 0) {
+                Write-Host "Warning: Cannot disable tests in codeunits with a comma in the name ($($disabledTestMethod.codeunitName):$_)"
             }
-            $testKey = $disabledTestMethod.codeunitName + "," + $_
-            $ClientContext.SaveValue($removeTestMethodControl, $testKey)
+            else {
+                if ($debugMode) {
+                    Write-Host "Disabling Test $($disabledTestMethod.codeunitName):$_"
+                }
+                $testKey = "$($disabledTestMethod.codeunitName),$_"
+                $ClientContext.SaveValue($removeTestMethodControl, $testKey)
+            }
         }
     }
 }
@@ -520,6 +525,13 @@ function Run-Tests {
                     $property.SetAttribute("name","processinfo.start")
                     $property.SetAttribute("value", $processinfostart)
                     $JunitTestSuiteProperties.AppendChild($property) | Out-Null
+
+                    if ($extensionid) {
+                        $property = $JUnitDoc.CreateElement("property")
+                        $property.SetAttribute("name","extensionid")
+                        $property.SetAttribute("value", $extensionId)
+                        $JunitTestSuiteProperties.AppendChild($property) | Out-Null
+                    }
 
                     if ($dumpAppsToTestOutput) {
                         $versionInfo = (Get-Item -Path "C:\Program Files\Microsoft Dynamics NAV\*\Service\Microsoft.Dynamics.Nav.Server.exe").VersionInfo

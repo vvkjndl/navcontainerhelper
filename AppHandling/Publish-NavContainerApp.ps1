@@ -32,6 +32,10 @@
   Specify the credentials for the admin user if you use DevEndpoint and authentication is set to UserPassword
  .Parameter language
   Specify language version that is used for installing the app. The value must be a valid culture name for a language in Business Central, such as en-US or da-DK. If the specified language does not exist on the Business Central Server instance, then en-US is used.
+ .Parameter includeOnlyAppIds
+  Array of AppIds. If specified, then include Only Apps in the specified AppFile array or archive which is contained in this Array and their dependencies
+ .Parameter copyInstalledAppsToFolder
+  If specified, the installed apps will be copied to this folder in addition to being installed in the container
  .Parameter replaceDependencies
   With this parameter, you can specify a hashtable, describring that the specified dependencies in the apps being published should be replaced
  .Parameter internalsVisibleTo
@@ -78,6 +82,8 @@ function Publish-BcContainerApp {
         [switch] $useDevEndpoint,
         [pscredential] $credential,
         [string] $language = "",
+        [string[]] $includeOnlyAppIds = @(),
+        [string] $copyInstalledAppsToFolder = "",
         [hashtable] $replaceDependencies = $null,
         [hashtable[]] $internalsVisibleTo = $null,
         [ValidateSet('Ignore','True','False','Check')]
@@ -102,7 +108,7 @@ try {
         $appFolder = Join-Path $extensionsFolder "$containerName\$([guid]::NewGuid().ToString())"
         if ($appFile -is [string] -and $appFile.Startswith(':')) {
             New-Item $appFolder -ItemType Directory | Out-Null
-            $destFile = Join-Path $appFolder ([System.IO.Path]::GetFileName($appFile.SubString(1)))
+            $destFile = Join-Path $appFolder ([System.IO.Path]::GetFileName($appFile.SubString(1)).Replace('*','').Replace('?',''))
             Invoke-ScriptInBcContainer -containerName $containerName -scriptblock { Param($appFile, $destFile)
                 Copy-Item -Path $appFile -Destination $destFile -Force
             } -argumentList (Get-BcContainerPath -containerName $containerName -path $appFile), (Get-BcContainerPath -containerName $containerName -path $destFile) | Out-Null
@@ -122,16 +128,20 @@ try {
     }
 
     try {
-        if ($appFolder) {
-            $appFiles = @(Sort-AppFilesByDependencies -containerName $containerName -appFiles $appFiles -WarningAction SilentlyContinue)
-        }
+        $appFiles = @(Sort-AppFilesByDependencies -containerName $containerName -appFiles $appFiles -includeOnlyAppIds $includeOnlyAppIds -WarningAction SilentlyContinue)
         $appFiles | Where-Object { $_ } | ForEach-Object {
-
             $appFile = $_
 
             if ($ShowMyCode -ne "Ignore" -or $replaceDependencies -or $replacePackageId -or $internalsVisibleTo) {
                 Write-Host "Checking dependencies in $appFile"
                 Replace-DependenciesInAppFile -containerName $containerName -Path $appFile -replaceDependencies $replaceDependencies -internalsVisibleTo $internalsVisibleTo -ShowMyCode $ShowMyCode -replacePackageId:$replacePackageId
+            }
+
+            if ($copyInstalledAppsToFolder) {
+                if (!(Test-Path -Path $copyInstalledAppsToFolder)) {
+                    New-Item -Path $copyInstalledAppsToFolder -ItemType Directory | Out-Null
+                }
+                Copy-Item -Path $appFile -Destination $copyInstalledAppsToFolder -force
             }
         
             if ($bcAuthContext -and $environment) {
@@ -297,6 +307,7 @@ try {
                             Write-Host "$($navAppInfo.Name) is already published"
                             if ($appInfo.IsInstalled) {
                                 $install = $false
+                                $upgrade = $false
                                 Write-Host "$($navAppInfo.Name) is already installed"
                             }
                         }
@@ -327,7 +338,7 @@ try {
 
                         if($upgrade -and $install){
                             $navAppInfoFromDb = Get-NAVAppInfo -ServerInstance $ServerInstance -Publisher $appPublisher -Name $appName -Version $appVersion -Tenant $tenant -TenantSpecificProperties
-                            if($navAppInfoFromDb.ExtensionDataVersion -eq  $navAppInfoFromDb.Version){
+                            if($null -eq $navAppInfoFromDb.ExtensionDataVersion -or $navAppInfoFromDb.ExtensionDataVersion -eq  $navAppInfoFromDb.Version){
                                 $upgrade = $false
                             } else {
                                 $install = $false

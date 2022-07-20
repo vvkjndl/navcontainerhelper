@@ -36,8 +36,13 @@ function Get-BcContainerSession {
             }
         }
         if (!$session) {
-            $containerId = Get-BcContainerId -containerName $containerName
-            $session = New-PSSession -ContainerId $containerId -RunAsAdministrator
+            if ($isInsideContainer) {
+                $session = New-PSSession -Credential $bcContainerHelperConfig.WinRmCredentials -ComputerName $containerName -Authentication Basic -UseSSL -SessionOption (New-PSSessionOption -SkipCACheck -SkipCNCheck)
+            }
+            else {
+                $containerId = Get-BcContainerId -containerName $containerName
+                $session = New-PSSession -ContainerId $containerId -RunAsAdministrator
+            }
             $newsession = $true
         }
         Invoke-Command -Session $session -ScriptBlock { Param([bool]$silent)
@@ -54,6 +59,8 @@ function Get-BcContainerSession {
                     (Join-Path $runPath $FileName)
                 }
             }
+
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
             . (Get-MyFilePath "prompt.ps1") -silent:$silent | Out-Null
             . (Get-MyFilePath "ServiceSettings.ps1") | Out-Null

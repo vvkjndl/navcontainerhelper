@@ -60,7 +60,11 @@ try {
             -clientID $clientID `
             -clientSecret $clientSecret `
             -tenantID $tenantId `
-            -scopes "$($bcContainerHelperConfig.apiBaseUrl.TrimEnd('/'))/.default"
+            -scopes "https://api.businesscentral.dynamics.com/.default"
+
+        if (-not ($bcAuthContext)) {
+            throw "Authentication failed"
+        }
     }
     else {
         $bcAuthContext = Renew-BcAuthContext -bcAuthContext $bcAuthContext
@@ -105,9 +109,10 @@ try {
                 Write-Host @newLine "."    
                 $completed = $false
                 $errCount = 0
+                $sleepSeconds = 5
                 while (!$completed)
                 {
-                    Start-Sleep -Seconds 5
+                    Start-Sleep -Seconds $sleepSeconds
                     try {
                         $extensionDeploymentStatusResponse = Invoke-WebRequest -Headers $authHeaders -Method Get -Uri "$automationApiUrl/companies($companyId)/extensionDeploymentStatus" -UseBasicParsing
                         $extensionDeploymentStatuses = (ConvertFrom-Json $extensionDeploymentStatusResponse.Content).value
@@ -124,12 +129,14 @@ try {
                             }
                         }
                         $errCount = 0
+                        $sleepSeconds = 5
                     }
                     catch {
-                        if ($errCount++ -gt 3) {
+                        if ($errCount++ -gt 4) {
                             Write-Host $_.Exception.Message
                             throw "Unable to publish app. Please open the Extension Deployment Status Details page in Business Central to see the detailed error message."
                         }
+                        $sleepSeconds += $sleepSeconds
                         $completed = $false
                     }
                 }
@@ -137,6 +144,10 @@ try {
                     Write-Host "completed"
                 }
             }
+        }
+        catch [System.Net.WebException] {
+            Write-Host "ERROR $($_.Exception.Message)"
+            throw (GetExtendedErrorMessage $_)
         }
         finally {
             $getExtensions = Invoke-WebRequest -Headers $authHeaders -Method Get -Uri "$automationApiUrl/companies($companyId)/extensions" -UseBasicParsing
@@ -146,6 +157,10 @@ try {
             Write-Host "Extensions after:"
             $extensions | % { Write-Host " - $($_.DisplayName), Version $($_.versionMajor).$($_.versionMinor).$($_.versionBuild).$($_.versionRevision), Installed=$($_.isInstalled)" }
         }
+    }
+    catch [System.Net.WebException] {
+        Write-Host "ERROR $($_.Exception.Message)"
+        throw (GetExtendedErrorMessage $_)
     }
     finally {
         if (Test-Path $appFolder) {

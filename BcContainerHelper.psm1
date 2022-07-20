@@ -19,23 +19,34 @@ if ([intptr]::Size -eq 4) {
 
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $isAdministrator = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$isInsideContainer = ((whoami) -eq "user manager\containeradministrator")
+
 try {
     $myUsername = $currentPrincipal.Identity.Name
 } catch {
     $myUsername = (whoami)
 }
 
+$BcContainerHelperVersion = Get-Content (Join-Path $PSScriptRoot "Version.txt")
+if (!$silent) {
+    Write-Host "BcContainerHelper version $BcContainerHelperVersion"
+}
+$isInsider = $BcContainerHelperVersion -like "*-dev" -or $BcContainerHelperVersion -like "*-preview*"
+
 function Get-ContainerHelperConfig {
     if (!((Get-Variable -scope Script bcContainerHelperConfig -ErrorAction SilentlyContinue) -and $bcContainerHelperConfig)) {
         Set-Variable -scope Script -Name bcContainerHelperConfig -Value @{
-            "bcartifactsCacheFolder" = "c:\bcartifacts.cache"
+            "bcartifactsCacheFolder" = ""
             "genericImageName" = 'mcr.microsoft.com/businesscentral:{0}'
             "genericImageNameFilesOnly" = 'mcr.microsoft.com/businesscentral:{0}-filesonly'
-            "usePsSession" = $isAdministrator
+            "usePsSession" = $isAdministrator # -and ("$ENV:GITHUB_ACTIONS" -ne "true") -and ("$ENV:TF_BUILD" -ne "true")
+            "addTryCatchToScriptBlock" = $true
+            "killPsSessionProcess" = $false
+            "useVolumes" = $useVolumes -or $isInsideContainer
             "useVolumeForMyFolder" = $false
             "use7zipIfAvailable" = $true
             "defaultNewContainerParameters" = @{ }
-            "hostHelperFolder" = "C:\ProgramData\BcContainerHelper"
+            "hostHelperFolder" = ""
             "containerHelperFolder" = "C:\ProgramData\BcContainerHelper"
             "defaultContainerName" = "bcserver"
             "digestAlgorithm" = "SHA256"
@@ -48,8 +59,11 @@ function Get-ContainerHelperConfig {
             "apiBaseUrl" = "https://api.businesscentral.dynamics.com"
             "mapCountryCode" = [PSCustomObject]@{
                 "ae" = "w1"
+                "ar" = "w1"
                 "bd" = "w1"
                 "dz" = "w1"
+                "cl" = "w1"
+                "pr" = "w1"
                 "eg" = "w1"
                 "fo" = "dk"
                 "gl" = "dk"
@@ -69,20 +83,42 @@ function Get-ContainerHelperConfig {
                 "tn" = "w1"
                 "ua" = "w1"
                 "za" = "w1"
+                "ao" = "w1"
+                "bh" = "w1"
+                "ba" = "w1"
+                "bw" = "w1"
+                "cr" = "w1"
+                "cy" = "w1"
+                "do" = "w1"
+                "ec" = "w1"
+                "sv" = "w1"
+                "gt" = "w1"
+                "hn" = "w1"
+                "jm" = "w1"
+                "mv" = "w1"
+                "mu" = "w1"
+                "ni" = "w1"
+                "pa" = "w1"
+                "py" = "w1"
+                "tt" = "w1"
+                "uy" = "w1"
+                "zw" = "w1"
             }
             "TraefikUseDnsNameAsHostName" = $false
-            "TreatWarningsAsErrors" = @('AL1026')
+            "TreatWarningsAsErrors" = @()
             "PartnerTelemetryConnectionString" = ""
             "MicrosoftTelemetryConnectionString" = "InstrumentationKey=5b44407e-9750-4a07-abe9-30c3b853821b;IngestionEndpoint=https://southcentralus-0.in.applicationinsights.azure.com/"
             "SendExtendedTelemetryToMicrosoft" = $false
             "TraefikImage" = "traefik:v1.7-windowsservercore-1809"
             "ObjectIdForInternalUse" = 88123
+            "WinRmCredentials" = $null
+            "WarningPreference" = "SilentlyContinue"
+            "UseOldFormatForGetBcContainerAppInfo" = $false
         }
 
-        if ($useVolumes) {
-            $bcContainerHelperConfig.bcartifactsCacheFolder = "bcartifacts.cache"
-            $bcContainerHelperConfig.hostHelperFolder = "hostHelperFolder"
-            $bcContainerHelperConfig.useVolumeForMyFolder = $true
+        if ($isInsider) {
+            $bcContainerHelperConfig.genericImageName = 'mcr.microsoft.com/businesscentral:{0}-dev'
+            $bcContainerHelperConfig.genericImageNameFilesOnly = 'mcr.microsoft.com/businesscentral:{0}-filesonly-dev'
         }
 
         if ($bcContainerHelperConfigFile -notcontains "C:\ProgramData\BcContainerHelper\BcContainerHelper.config.json") {
@@ -95,7 +131,7 @@ function Get-ContainerHelperConfig {
                     $savedConfig = Get-Content $configFile | ConvertFrom-Json
                     if ("$savedConfig") {
                         $keys = $bcContainerHelperConfig.Keys | % { $_ }
-                        $keys | % {
+                        $keys | ForEach-Object {
                             if ($savedConfig.PSObject.Properties.Name -eq "$_") {
                                 if (!$silent) {
                                     Write-Host "Setting $_ = $($savedConfig."$_")"
@@ -110,6 +146,34 @@ function Get-ContainerHelperConfig {
                 }
             }
         }
+
+        if ($isInsideContainer) {
+            $bcContainerHelperConfig.usePsSession = $true
+            try {
+                $myinspect = docker inspect $(hostname) | ConvertFrom-Json
+                $bcContainerHelperConfig.WinRmCredentials = New-Object PSCredential -ArgumentList 'WinRmUser', (ConvertTo-SecureString -string "P@ss$($myinspect.Id.SubString(48))" -AsPlainText -Force)
+            }
+            catch {}
+        }
+
+        if ($bcContainerHelperConfig.UseVolumes) {
+            if ($bcContainerHelperConfig.bcartifactsCacheFolder -eq "") {
+                $bcContainerHelperConfig.bcartifactsCacheFolder = "bcartifacts.cache"
+            }
+            if ($bcContainerHelperConfig.hostHelperFolder -eq "") {
+                $bcContainerHelperConfig.hostHelperFolder = "hostHelperFolder"
+            }
+            $bcContainerHelperConfig.useVolumeForMyFolder = $false
+        }
+        else {
+            if ($bcContainerHelperConfig.bcartifactsCacheFolder -eq "") {
+                $bcContainerHelperConfig.bcartifactsCacheFolder = "c:\bcartifacts.cache"
+            }
+            if ($bcContainerHelperConfig.hostHelperFolder -eq "") {
+                $bcContainerHelperConfig.hostHelperFolder = "C:\ProgramData\BcContainerHelper"
+            }
+        }
+
         Export-ModuleMember -Variable bcContainerHelperConfig
     }
     return $bcContainerHelperConfig
@@ -182,11 +246,6 @@ $bcartifactsCacheFolder = VolumeOrPath $bcContainerHelperConfig.bcartifactsCache
 $hostHelperFolder = VolumeOrPath $bcContainerHelperConfig.HostHelperFolder
 $extensionsFolder = Join-Path $hostHelperFolder "Extensions"
 $containerHelperFolder = $bcContainerHelperConfig.ContainerHelperFolder
-
-$BcContainerHelperVersion = Get-Content (Join-Path $PSScriptRoot "Version.txt")
-if (!$silent) {
-    Write-Host "BcContainerHelper version $BcContainerHelperVersion"
-}
 
 $ENV:DOCKER_SCAN_SUGGEST = "$($bcContainerHelperConfig.DOCKER_SCAN_SUGGEST)".ToLowerInvariant()
 
@@ -296,6 +355,8 @@ if (!$silent) {
 . (Join-Path $PSScriptRoot "ContainerHandling\Get-LatestAlLanguageExtensionUrl.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\Get-AlLanguageExtensionFromArtifacts.ps1")
 . (Join-Path $PSScriptRoot "ContainerHandling\traefik\Add-DomainToTraefikConfig.ps1")
+. (Join-Path $PSScriptRoot "ContainerHandling\Set-BcContainerServerConfiguration.ps1")
+. (Join-Path $PSScriptRoot "ContainerHandling\Restart-BcContainerServiceTier.ps1")
 
 # Object Handling functions
 . (Join-Path $PSScriptRoot "ObjectHandling\Export-NavContainerObjects.ps1")
@@ -309,6 +370,11 @@ if (!$silent) {
 . (Join-Path $PSScriptRoot "ObjectHandling\Import-TestToolkitToNavContainer.ps1")
 . (Join-Path $PSScriptRoot "ObjectHandling\Compile-ObjectsInNavContainer.ps1")
 . (Join-Path $PSScriptRoot "ObjectHandling\Invoke-NavContainerCodeunit.ps1")
+
+# AL-Go for GitHub functions
+. (Join-Path $PSScriptRoot "AL-Go\Get-ALGoAuthContext.ps1")
+#. (Join-Path $PSScriptRoot "AL-Go\New-ALGoRepo.ps1")
+#. (Join-Path $PSScriptRoot "AL-Go\New-ALGoRepoWizard.ps1")
 
 # App Handling functions
 . (Join-Path $PSScriptRoot "AppHandling\Publish-NavContainerApp.ps1")
@@ -404,6 +470,8 @@ if (!$silent) {
 . (Join-Path $PSScriptRoot "Misc\ConvertTo-HashTable.ps1")
 . (Join-Path $PSScriptRoot "Misc\ConvertTo-OrderedDictionary.ps1")
 . (Join-Path $PSScriptRoot "Misc\ConvertTo-GitHubGoCredentials.ps1")
+. (Join-Path $PSScriptRoot "Misc\Invoke-gh.ps1")
+. (Join-Path $PSScriptRoot "Misc\Invoke-git.ps1")
 
 # Company Handling functions
 . (Join-Path $PSScriptRoot "CompanyHandling\Copy-CompanyInNavContainer.ps1")

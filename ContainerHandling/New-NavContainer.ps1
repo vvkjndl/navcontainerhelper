@@ -202,6 +202,9 @@ function New-BcContainer {
         [string] $licenseFile = "",
         [PSCredential] $Credential = $null,
         [string] $authenticationEMail = "",
+        [string] $AadTenant = "",
+        [string] $AadAppId = "",
+        [string] $AadAppIdUri = "",
         [string] $memoryLimit = "",
         [string] $sqlMemoryLimit = "",
         [ValidateSet('','process','hyperv')]
@@ -409,7 +412,6 @@ try {
 
     $isServerHost = $os.ProductType -eq 3
 
-
     if ($os.BuildNumber -eq 20348 -or $os.BuildNumber -eq 22000) { 
         if ($isServerHost) {
             $hostOs = "ltsc2022"
@@ -465,20 +467,20 @@ try {
     Write-Host "BcContainerHelper is version $BcContainerHelperVersion"
     if ($isAdministrator) {
         Write-Host "BcContainerHelper is running as administrator"
+        Write-Host "Hyper-V is $(Get-HypervState)"
     }
     else {
         Write-Host "BcContainerHelper is not running as administrator"
     }
-
+    if ($isInsideContainer) {
+        Write-Host "BcContainerHelper is running inside a Container"
+    }
+    Write-Host "UsePsSession is $($bcContainerHelperConfig.UsePsSession)"
     Write-Host "Host is $($os.Caption) - $hostOs"
 
     $dockerService = (Get-Process "dockerd" -ErrorAction Ignore)
     if (!($dockerService)) {
-        throw "Docker Service not found. Docker is not started, not installed or not running Windows Containers."
-    }
-
-    if ($dockerService.Status -ne "Running") {
-        throw "Docker Service is $($dockerService.Status) (Needs to be running)"
+        Write-Host -ForegroundColor Red "Docker Service not found. Docker might not be started, not installed or not running Windows Containers."
     }
 
     $dockerVersion = docker version -f "{{.Server.Os}}/{{.Client.Version}}/{{.Server.Version}}"
@@ -552,7 +554,7 @@ try {
             $createTenantAndUserInExternalDatabase = $true
             $bakFile = ""
             $successFileName = Join-Path $bcContainerHelperConfig.containerHelperFolder "$($databasePrefix)databasescreated.txt"
-            $myscripts += @( @{ "SetupDatabase.ps1" = "if (!(Test-Path ""$successFileName"")) { Write-Host -NoNewline 'Waiting for database creation to finish'; while (!(Test-Path ""$successFileName"")) { Start-Sleep -seconds 1; Write-Host -NoNewLine '.' }; Write-Host }; . 'c:\run\setupDatabase.ps1'" } ) `
+            $myscripts += @( @{ "SetupDatabase.ps1" = "if (!(Test-Path ""$successFileName"")) { Write-Host 'Waiting for database creation to finish'; while (!(Test-Path ""$successFileName"")) { Start-Sleep -seconds 5 }; } Get-Content ""$successFileName"" | Out-Host; . 'c:\run\setupDatabase.ps1'" } ) `
         }
     }
 
@@ -596,6 +598,7 @@ try {
                 -includeTestLibrariesOnly:$includeTestLibrariesOnly `
                 -includePerformanceToolkit:$includePerformanceToolkit `
                 -skipIfImageAlreadyExists:(!$forceRebuild) `
+                -runSandboxAsOnPrem:$runSandboxAsOnPrem `
                 -allImages $allImages `
                 -filesOnly:$filesOnly
 
@@ -667,6 +670,7 @@ try {
 
     $parameters = @()
     $customNavSettings = @()
+    $customWebSettings = @()
 
     $devCountry = $dvdCountry
     $navVersion = $dvdVersion
@@ -995,13 +999,17 @@ try {
         AddTelemetryProperty -telemetryScope $telemetryScope -key "platformVersion" -value $platformVersion
     }
 
-    $genericTag = $inspect.Config.Labels.tag
-    Write-Host "Generic Tag: $genericTag"
+    $genericIsDev = ""
+    if ($imageName -like "mcr.microsoft.com/businesscentral:*-dev") {
+        $genericIsDev = "-dev"
+    }
+    $genericTag = [Version]"$($inspect.Config.Labels.tag)"
+    Write-Host "Generic Tag: $genericTag$genericIsDev"
     AddTelemetryProperty -telemetryScope $telemetryScope -key "applicationVersion" -value $navVersion
     AddTelemetryProperty -telemetryScope $telemetryScope -key "country" -value $devCountry
     AddTelemetryProperty -telemetryScope $telemetryScope -key "style" -value $bcStyle
     AddTelemetryProperty -telemetryScope $telemetryScope -key "multitenant" -value $multitenant
-    AddTelemetryProperty -telemetryScope $telemetryScope -key "genericTag" -value $genericTag
+    AddTelemetryProperty -telemetryScope $telemetryScope -key "genericTag" -value "$genericTag"
 
     $containerOsVersion = [Version]"$($inspect.Config.Labels.osversion)"
     if ("$containerOsVersion".StartsWith('10.0.14393.')) {
@@ -1185,7 +1193,7 @@ try {
         Write-Host "Generic Tag of better generic: $genericTagVersion"
     }
 
-    if ($version.Major -lt 15 -and ($genericTag -eq "1.0.1.7")) {
+    if ($version.Major -lt 15 -and ($genericTag -eq [Version]"1.0.1.7")) {
         Write-Host "Patching start.ps1 due to issue #2130"
         $myscripts += @( "https://raw.githubusercontent.com/microsoft/nav-docker/master/generic/Run/start.ps1" )
     }
@@ -1234,6 +1242,10 @@ try {
     }
     Write-Host "Using $isolation isolation"
 
+    if ($isolation -eq "process" -and !$isServerHost -and ($version.Major -lt 15 -or $genericTag -lt [Version]"1.0.2.4")) {
+        Write-Host -ForegroundColor Yellow "WARNING: Using process isolation on Windows Desktop OS with generic image version prior to 1.0.2.4 or NAV/BC versions prior to 15.0, might require you to use HyperV isolation or disable Windows Defender while creating the container"
+    }
+
     AddTelemetryProperty -telemetryScope $telemetryScope -key "isolation" -value $isolation
 
 
@@ -1243,7 +1255,6 @@ try {
     Write-Host "Using locale $locale"
 
     AddTelemetryProperty -telemetryScope $telemetryScope -key "locale" -value $locale
-
 
     if ($filesOnly -and $version.Major -lt 15) {
         throw "FilesOnly containers are not supported for version prior to 15"
@@ -1370,15 +1381,19 @@ try {
     }
 
     if ($vsixFile) {
-        if ($vsixFile.StartsWith("https://", "OrdinalIgnoreCase") -or $vsixFile.StartsWith("http://", "OrdinalIgnoreCase")) {
-            $uri = [Uri]::new($vsixFile)
-            Download-File -sourceUrl $vsixFile -destinationFile "$containerFolder\$($uri.Segments[$uri.Segments.Count-1]).vsix"
+        $vsixUrl = $vsixFile
+        if ($vsixUrl.StartsWith("https://", "OrdinalIgnoreCase") -or $vsixUrl.StartsWith("http://", "OrdinalIgnoreCase")) {
+            $uri = [Uri]::new($vsixUrl)
+            $vsixFile = "$containerFolder\$($uri.Segments[$uri.Segments.Count-1]).vsix"
+            Download-File -sourceUrl $vsixUrl -destinationFile $vsixFile
         }
-        elseif (Test-Path $vsixFile -PathType Leaf) {
-            Copy-Item -Path $vsixFile -Destination $containerFolder
+        elseif (Test-Path $vsixUrl -PathType Leaf) {
+            $vsixFile = "$containerFolder\$([System.IO.Path]::GetFileName($vsixUrl))"
+            Copy-Item -Path $vsixUrl -Destination $vsixFile
         }
         else {
-            throw "Unable to locate vsix file ($vsixFile)"
+            $vsixFile = ""
+            throw "Unable to locate vsix file ($vsixUrl)"
         }
     }
 
@@ -1471,6 +1486,23 @@ try {
         $parameters += "--env authenticationEMail=""$authenticationEMail"""
     }
 
+    if ($AadAppId) {
+        $customNavSettings += @("ValidAudiences=$AadAppId;https://api.businesscentral.dynamics.com", "DisableTokenSigningCertificateValidation=True", "ExtendedSecurityTokenLifetime=24", "ClientServicesCredentialType=NavUserPassword")
+        if ($version.Major -ge 20) {
+            $AadTenantId = $AadTenant
+            if (!$AadTenantId) { $AadTenantId = "Common" }
+            $customWebSettings += @("AadApplicationId=$AadAppId","AadAuthorityUri=https://login.microsoftonline.com/$AADTenantId")
+        }
+    }
+
+    if ($AadTenant) {
+        $parameters += "--env AadTenant=$AadTenant"
+    }
+
+    if ($AadAppIdUri) {
+        $parameters += "--env AppIdUri=$AadAppIdUri"
+    }
+
     if ($PSBoundParameters.ContainsKey('enableTaskScheduler')) {
         $customNavSettings += @("EnableTaskScheduler=$enableTaskScheduler")
     }
@@ -1482,16 +1514,29 @@ try {
         $enableSymbolLoading = $false
     }
 
+    if ($IsInsideContainer) {
+        ('
+if (!$restartingInstance) {
+    $cert = New-SelfSignedCertificate -DnsName "dontcare" -CertStoreLocation Cert:\LocalMachine\My
+    winrm create winrm/config/Listener?Address=*+Transport=HTTPS (''@{Hostname="dontcare"; CertificateThumbprint="'' + $cert.Thumbprint + ''"}'')
+    winrm set winrm/config/service/Auth ''@{Basic="true"}''
+    Write-Host "Creating Container user $username"
+    New-LocalUser -AccountNeverExpires -PasswordNeverExpires -FullName $username -Name '+$bcContainerHelperConfig.WinRmCredentials.UserName+' -Password (ConvertTo-SecureString -string "'+([System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($bcContainerHelperConfig.WinRmCredentials.Password)))+'" -AsPlainText -force) | Out-Null
+    Add-LocalGroupMember -Group administrators -Member '+$bcContainerHelperConfig.WinRmCredentials.UserName+'
+}
+') | Add-Content -Path "$myfolder\AdditionalSetup.ps1"
+
+    }
     if ($includeCSide) {
         $programFilesFolder = Join-Path $containerFolder "Program Files"
         New-Item -Path $programFilesFolder -ItemType Directory -ErrorAction Ignore | Out-Null
 
         # Clear modified flag on all objects
-        ('
+        (@'
 if ($restartingInstance -eq $false -and $databaseServer -eq "localhost" -and $databaseInstance -eq "SQLEXPRESS") {
-    sqlcmd -S ''localhost\SQLEXPRESS'' -d $DatabaseName -Q "update [dbo].[Object] SET [Modified] = 0" | Out-Null
+    sqlcmd -S 'localhost\SQLEXPRESS' -d $DatabaseName -Q "update [dbo].[Object] SET [Modified] = 0" | Out-Null
 }
-') | Add-Content -Path "$myfolder\AdditionalSetup.ps1"
+'@) | Add-Content -Path "$myfolder\AdditionalSetup.ps1"
 
         if (Test-Path $programFilesFolder) {
             Remove-Item $programFilesFolder -Force -Recurse -ErrorAction Ignore
@@ -1734,6 +1779,23 @@ if (-not `$restartingInstance) {
         }
     }
 
+    if ($customWebSettings) {
+        $customWebSettingsAdded = $false
+        $cnt = $additionalParameters.Count-1
+        if ($cnt -ge 0) {
+            0..$cnt | % {
+                $idx = $additionalParameters[$_].ToLowerInvariant().IndexOf('customwebsettings=')
+                if ($idx -gt 0) {
+                    $additionalParameters[$_] = "$($additionalParameters[$_]),$([string]::Join(',',$customWebSettings))"
+                    $customWebSettingsAdded = $true
+                }
+            }
+        }
+        if (-not $customWebSettingsAdded) {
+            $additionalParameters += @("--env customWebSettings=$([string]::Join(',',$customWebSettings))")
+        }
+    }
+
     if ($additionalParameters) {
         Write-Host "Additional Parameters:"
         $additionalParameters | % { if ($_) { Write-Host "$_" } }
@@ -1796,7 +1858,13 @@ if (-not `$restartingInstance) {
                 Get-BcContainerSession -containerName $containerName -reinit -silent | Out-Null
             } catch {}
         }
-        
+
+        if ($filesOnly -and $vsixFile) {
+            Invoke-ScriptInBcContainer -containerName $containerName -scriptBlock { Param($vsixFile)
+                Remove-Item -Path 'C:\Run\*.vsix'
+                Copy-Item -Path $vsixFile -Destination 'C:\Run' -force
+            } -argumentList (Get-BcContainerPath -containerName $containerName -path $vsixFile)
+        }
 
         if ($sharedEncryptionKeyFile -and !(Test-Path $sharedEncryptionKeyFile)) {
             Write-Host "Storing Container Encryption Key file"
@@ -1850,41 +1918,65 @@ if (-not `$restartingInstance) {
         if ($useSSL -and $installCertificateOnHost) {
             $certPath = Join-Path $containerFolder "certificate.cer"
             if (Test-Path $certPath) {
-                $cert = Import-Certificate -FilePath $certPath -CertStoreLocation "cert:\localMachine\Root"
-                if ($cert) {
-                    Write-Host "Certificate with thumbprint $($cert.Thumbprint) imported successfully"
-                    Set-Content -Path (Join-Path $containerFolder "thumbprint.txt") -Value "$($cert.Thumbprint)"
+                try {
+                    Write-Host "Importing certificate in host's certificate store"
+                    $verb = @{}
+                    if (!$isAdministrator) {
+                        $verb = @{ "Verb" = "runAs" }
+                    }
+                    $scriptblock = { 
+                        Param($certPath, $containerFolder)
+                        $cert = Import-Certificate -FilePath $certPath -CertStoreLocation "cert:\LocalMachine\Root"
+                        if ($cert) {
+                            Write-Host "Certificate with thumbprint $($cert.Thumbprint) imported successfully"
+                            Set-Content -Path (Join-Path $containerFolder "thumbprint.txt") -Value "$($cert.Thumbprint)"
+                        }
+                    }
+                    Start-Process Powershell @verb -ArgumentList "-command & {$scriptBlock} -certPath '$certPath' -containerFolder '$containerFolder'" -Wait -PassThru | Out-Null
+                }
+                catch {
+                    Write-Host -ForegroundColor Yellow "Unable to import certificate $certPath in Trusted Root Certification Authorities, you will need to do this manually"
                 }
             }
         }
     
         if ($shortcuts -ne "None") {
-            Write-Host "Creating Desktop Shortcuts for $containerName"
-            if (-not [string]::IsNullOrEmpty($customConfig.PublicWebBaseUrl)) {
-                $webClientUrl = $customConfig.PublicWebBaseUrl
-                if ($multitenant) {
-                    $webClientUrl += "?tenant=default"
+                Write-Host "Creating Desktop Shortcuts for $containerName"
+                $exePath = "C:\Program Files\Internet Explorer\iexplore.exe, 3"
+                try {
+                    $ProgramId = (Get-ItemProperty HKCU:\Software\Microsoft\windows\Shell\Associations\UrlAssociations\http\UserChoice).Progid
+                    $key = "HKLM:\SOFTWARE\Classes\$ProgramId\shell\open\command"
+                    $tempPath = (Get-ItemProperty -Path $key)."(default)" -replace " *--.*", ""
+                    $tempPath = $tempPath.Replace("`"", "")
+                    if ($tempPath -and (Test-Path $tempPath -PathType Leaf)) { $exePath = $tempPath }
                 }
-                New-DesktopShortcut -Name "$containerName Web Client" -TargetPath "$webClientUrl" -IconLocation "C:\Program Files\Internet Explorer\iexplore.exe, 3" -Shortcuts $shortcuts
-                if ($includeTestToolkit) {
-                    if ($version -ge [Version]("15.0.35528.0")) {
-                        $pageno = 130451
+                catch {}
+
+                if (-not [string]::IsNullOrEmpty($customConfig.PublicWebBaseUrl)) {
+                    $webClientUrl = $customConfig.PublicWebBaseUrl
+                    if ($multitenant) {
+                        $webClientUrl += "?tenant=default"
                     }
-                    else {
-                        $pageno = 130401
-                    }
+                    New-DesktopShortcut -Name "$containerName Web Client" -TargetPath "$webClientUrl" -IconLocation $exePath -Shortcuts $shortcuts
+                    if ($includeTestToolkit) {
+                        if ($version -ge [Version]("15.0.35528.0")) {
+                            $pageno = 130451
+                        }
+                        else {
+                            $pageno = 130401
+                        }
     
-                    if ($webClientUrl.Contains('?')) {
-                        $webClientUrl += "&page="
-                    } else {
-                        $webClientUrl += "?page="
-                    }
-                    New-DesktopShortcut -Name "$containerName Test Tool" -TargetPath "$webClientUrl$pageno" -IconLocation "C:\Program Files\Internet Explorer\iexplore.exe, 3" -Shortcuts $shortcuts
-                    if ($includePerformanceToolkit) {
-                        New-DesktopShortcut -Name "$containerName Performance Tool" -TargetPath "$($webClientUrl)149000" -IconLocation "C:\Program Files\Internet Explorer\iexplore.exe, 3" -Shortcuts $shortcuts
+                        if ($webClientUrl.Contains('?')) {
+                            $webClientUrl += "&page="
+                        }
+                        else {
+                            $webClientUrl += "?page="
+                        }
+                        New-DesktopShortcut -Name "$containerName Test Tool" -TargetPath "$webClientUrl$pageno" -IconLocation $exePath -Shortcuts $shortcuts
+                        if ($includePerformanceToolkit) {
+                            New-DesktopShortcut -Name "$containerName Performance Tool" -TargetPath "$($webClientUrl)149000" -IconLocation $exePath -Shortcuts $shortcuts
                     }
                 }
-                
             }
             
             $vs = "Business Central"
@@ -2207,6 +2299,21 @@ if (-not `$restartingInstance) {
             Write-Host "Dev Service:       $devUrl"
             Write-Host "Snapshot Service:  $snapUrl"
             Write-Host "File downloads:    $dlUrl"
+        }
+
+        if (!$doNotCheckHealth) {
+            if (Invoke-ScriptInBcContainer -containerName $containerName -scriptblock {
+                $result = $false
+                try {
+                    . c:\run\healthcheck.ps1
+                    $result = ("$LASTEXITCODE" -eq "1")
+                }
+                catch {}
+                $result
+            }) {
+                Write-Host "Health check returns False, restarting container"
+                Restart-BcContainer $containerName
+            }
         }
     
         Write-Host

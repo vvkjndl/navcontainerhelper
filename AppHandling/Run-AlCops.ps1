@@ -15,8 +15,8 @@
   Array or comma separated list of affixes to use for AppSourceCop validation
  .Parameter supportedCountries
   Array or comma separated list of supportedCountries to use for AppSourceCop validation
- .Parameter useLatestAlLanguageExtension
-  Include this switch if you want to use the latest AL Extension from marketplace instead of the one included in 
+ .Parameter obsoleteTagMinAllowedMajorMinor
+  Objects that are pending obsoletion with an obsolete tag version lower than the minimum set in the AppSourceCop.json file are not allowed. (AS0105)
  .Parameter appPackagesFolder
   Folder in which symbols and apps will be cached. The folder must be shared with the container.
  .Parameter enableAppSourceCop
@@ -35,6 +35,10 @@
   Include this switch if you don't want to ignore Infos
  .Parameter rulesetFile
   Filename of the ruleset file for Compile-AppInBcContainer
+ .Parameter skipVerification
+  Include this parameter to skip verification of code signing certificate. Note that you cannot request Microsoft to set this parameter when validating for AppSource.
+ .Parameter reportSuppressedDiagnostics
+  Set reportSuppressedDiagnostics flag on ALC when compiling to ignore pragma warning disables
  .Parameter CompileAppInBcContainer
   Override function parameter for Compile-AppInBcContainer
 #>
@@ -46,6 +50,7 @@ function Run-AlCops {
         $apps,
         $affixes,
         $supportedCountries,
+        [string] $obsoleteTagMinAllowedMajorMinor = "",
         $appPackagesFolder = (Join-Path $hosthelperfolder ([Guid]::NewGuid().ToString())),
         [switch] $enableAppSourceCop,
         [switch] $enableCodeCop,
@@ -54,6 +59,8 @@ function Run-AlCops {
         [switch] $failOnError,
         [switch] $ignoreWarnings,
         [switch] $doNotIgnoreInfos,
+        [switch] $reportsuppresseddiagnostics = $true,
+        [switch] $skipVerification,
         [string] $rulesetFile = "",
         [scriptblock] $CompileAppInBcContainer
     )
@@ -117,9 +124,27 @@ try {
     $global:_validationResult = @()
     $apps | % {
         $appFile = $_
-    
+        $appFileName = [System.IO.Path]::GetFileName($appFile)
+
         $tmpFolder = Join-Path $hosthelperfolder ([Guid]::NewGuid().ToString())
         try {
+            $length = $global:_validationResult.Length
+            if (!$skipVerification) {
+                Copy-Item -path $appFile -Destination "$tmpFolder.app"
+                $signResult = Invoke-ScriptInBcContainer -containerName $containerName -scriptBlock { Param($appTmpFile)
+                    Get-AuthenticodeSignature -FilePath $appTmpFile
+                } -argumentList (Get-BcContainerPath -containerName $containerName -path "$tmpFolder.app")
+                Remove-Item "$tmpFolder.app" -Force
+
+                if ($signResult.Status.Value -eq "valid") {
+                    Write-Host -ForegroundColor Green "$appFileName is Signed with $($signResult.SignatureType.Value) certificate: $($signResult.SignerCertificate.Subject)"
+                }
+                else {
+                    Write-Host -ForegroundColor Red "$appFileName is not signed, result is $($signResult.Status.Value)"
+                    $global:_validationResult += @("$appFileName is not signed, result is $($signResult.Status.Value)")
+                }
+            }
+    
             $artifactUrl = Get-BcContainerArtifactUrl -containerName $containerName
 
             Extract-AppFileToFolder -appFilename $appFile -appFolder $tmpFolder -generateAppJson
@@ -145,10 +170,15 @@ try {
             }
 
             if ($enableAppSourceCop) {
-                Write-Host "Analyzing: $([System.IO.Path]::GetFileName($appFile))"
+                Write-Host "Analyzing: $appFileName"
                 Write-Host "Using affixes: $([string]::Join(',',$affixes))"
                 $appSourceCopJson = @{
                     "mandatoryAffixes" = @($affixes)
+                }
+                if ($obsoleteTagMinAllowedMajorMinor) {
+                    $appSourceCopJson += @{
+                        "ObsoleteTagMinAllowedMajorMinor" = $obsoleteTagMinAllowedMajorMinor
+                    }
                 }
                 if ($supportedCountries) {
                     Write-Host "Using supportedCountries: $([string]::Join(',',$supportedCountries))"
@@ -181,7 +211,6 @@ try {
             }
             Remove-Item -Path (Join-Path $tmpFolder '*.xml') -Force
 
-            $length = $global:_validationResult.Length
             $Parameters = @{
                 "containerName" = $containerName
                 "credential" = $credential
@@ -194,6 +223,7 @@ try {
                 "EnableUICop" = $enableUICop
                 "EnableCodeCop" = $enableCodeCop
                 "EnablePerTenantExtensionCop" = $enablePerTenantExtensionCop
+                "Reportsuppresseddiagnostics" = $reportsuppresseddiagnostics
                 "outputTo" = { Param($line) 
                     Write-Host $line
                     if ($line -like "error *" -or $line -like "warning *") {
@@ -253,6 +283,9 @@ try {
             } -argumentList (Get-BcContainerPath -containerName $containerName -path $appFile), (Get-BcContainerPath -containerName $containerName -path $appPackagesFolder) | Out-Null
         }
         finally {
+            if (Test-Path "$tmpFolder.app") {
+               Remove-Item -Path "$tmpFolder.app" -Force
+            }
             if (Test-Path $tmpFolder) {
                 Remove-Item -Path $tmpFolder -Recurse -Force
             }

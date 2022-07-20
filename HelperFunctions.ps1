@@ -37,6 +37,65 @@ function Get-DefaultSqlCredential {
     $sqlCredential
 }
 
+function CmdDo {
+    Param(
+        [string] $command = "",
+        [string] $arguments = "",
+        [switch] $silent,
+        [switch] $returnValue
+    )
+
+    $oldNoColor = "$env:NO_COLOR"
+    $env:NO_COLOR = "Y"
+    $oldEncoding = [Console]::OutputEncoding
+    try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+    try {
+        $result = $true
+        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+        $pinfo.FileName = $command
+        $pinfo.RedirectStandardError = $true
+        $pinfo.RedirectStandardOutput = $true
+        $pinfo.WorkingDirectory = Get-Location
+        $pinfo.UseShellExecute = $false
+        $pinfo.Arguments = $arguments
+        $pinfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Minimized
+
+        $p = New-Object System.Diagnostics.Process
+        $p.StartInfo = $pinfo
+        $p.Start() | Out-Null
+    
+        $outtask = $p.StandardOutput.ReadToEndAsync()
+        $errtask = $p.StandardError.ReadToEndAsync()
+        $p.WaitForExit();
+
+        $message = $outtask.Result
+        $err = $errtask.Result
+
+        if ("$err" -ne "") {
+            $message += "$err"
+        }
+        
+        $message = $message.Trim()
+
+        if ($p.ExitCode -eq 0) {
+            if (!$silent) {
+                Write-Host $message
+            }
+            if ($returnValue) {
+                $message.Replace("`r","").Split("`n")
+            }
+        }
+        else {
+            $message += "`n`nExitCode: "+$p.ExitCode + "`nCommandline: $command $arguments"
+            throw $message
+        }
+    }
+    finally {
+        try { [Console]::OutputEncoding = $oldEncoding } catch {}
+        $env:NO_COLOR = $oldNoColor
+    }
+}
+
 function DockerDo {
     Param(
         [Parameter(Mandatory=$true)]
@@ -308,13 +367,23 @@ function GetTestToolkitApps {
     } -argumentList $includeTestLibrariesOnly, $includeTestFrameworkOnly, $includeTestRunnerOnly, $includePerformanceToolkit
 }
 
-function GetExtenedErrorMessage {
+function GetExtendedErrorMessage {
     Param(
-        $exception
+        $errorRecord
     )
 
+    $exception = $errorRecord.Exception
     $message = $exception.Message
+
     try {
+        $errorDetails = $errorRecord.ErrorDetails | ConvertFrom-Json
+        $message += " $($errorDetails.error)`r`n$($errorDetails.error_description)"
+    }
+    catch {}
+    try {
+        if ($exception -is [System.Management.Automation.MethodInvocationException]) {
+            $exception = $exception.InnerException
+        }
         $webException = [System.Net.WebException]$exception
         $webResponse = $webException.Response
         $reqstream = $webResponse.GetResponseStream()
@@ -328,7 +397,10 @@ function GetExtenedErrorMessage {
             $message += " $result"
         }
         try {
-            $message += " (ms-correlation-x = $($webResponse.GetResponseHeader('ms-correlation-x')))"
+            $correlationX = $webResponse.GetResponseHeader('ms-correlation-x')
+            if ($correlationX) {
+                $message += " (ms-correlation-x = $correlationX)"
+            }
         }
         catch {}
     }
@@ -702,7 +774,6 @@ function Test-BcAuthContext {
           ($bcAuthContext.ContainsKey('RefreshToken')) -and
           ($bcAuthContext.ContainsKey('UtcExpiresOn')) -and
           ($bcAuthContext.ContainsKey('tenantID')) -and
-          ($bcAuthContext.ContainsKey('Resource')) -and
           ($bcAuthContext.ContainsKey('AccessToken')) -and
           ($bcAuthContext.ContainsKey('includeDeviceLogin')) -and
           ($bcAuthContext.ContainsKey('deviceLoginTimeout')))) {

@@ -48,6 +48,21 @@ function Get-BCArtifactUrl {
 $telemetryScope = InitTelemetryScope -name $MyInvocation.InvocationName -parameterValues $PSBoundParameters -includeParameters @("type","country","version","select","after","before","StorageAccount")
 try {
 
+    if ($type -eq "OnPrem") {
+        if ($version -like '18.9*') {
+            Write-Host -ForegroundColor Yellow 'On-premises build for 18.9 was replaced by 18.10.35134.0, using this version number instead'
+            $version = '18.10.35134.0'
+        }
+        elseif ($version -like '17.14*') {
+            Write-Host -ForegroundColor Yellow 'On-premises build for 17.14 was replaced by 17.15.35135.0, using this version number instead'
+            $version = '17.15.35135.0'
+        }
+        elseif ($version -like '16.19*') {
+            Write-Host -ForegroundColor Yellow 'On-premises build for 16.18 was replaced by 16.19.35126.0, using this version number instead'
+            $version = '16.19.35126.0'
+        }
+    }
+
     if ($select -eq "Weekly" -or $select -eq "Daily") {
         if ($select -eq "Daily") {
             $ignoreBuildsAfter = [DateTime]::Today
@@ -176,40 +191,68 @@ try {
         
         $webclient = New-Object System.Net.WebClient
         $Artifacts = @()
-        $nextMarker = ""
+        $nextMarker = ''
+        $currentMarker = ''
+        $downloadAttempt = 1
+        $downloadRetryAttempts = 10
         do {
+            if ($currentMarker -ne $nextMarker)
+            {
+                $currentMarker = $nextMarker
+                $downloadAttempt = 1
+            }
             Write-Verbose "DownloadString $GetListUrl$nextMarker"
-            $Response = $webClient.DownloadString("$GetListUrl$nextMarker")
-            $enumerationResults = ([xml]$Response).EnumerationResults
-            if ($enumerationResults.Blobs) {
-                if (($After) -or ($Before)) {
-                    $artifacts += $enumerationResults.Blobs.Blob | % {
-                        if ($after) {
-                            $blobModifiedDate = [DateTime]::Parse($_.Properties."Last-Modified")
-                            if ($before) {
-                                if ($blobModifiedDate -lt $before -and $blobModifiedDate -gt $after) {
+            try
+            {
+                $Response = $webClient.DownloadString("$GetListUrl$nextMarker")
+                $enumerationResults = ([xml]$Response).EnumerationResults
+
+                if ($enumerationResults.Blobs) {
+                    if (($After) -or ($Before)) {
+                        $artifacts += $enumerationResults.Blobs.Blob | % {
+                            if ($after) {
+                                $blobModifiedDate = [DateTime]::Parse($_.Properties."Last-Modified")
+                                if ($before) {
+                                    if ($blobModifiedDate -lt $before -and $blobModifiedDate -gt $after) {
+                                        $_.Name
+                                    }
+                                }
+                                elseif ($blobModifiedDate -gt $after) {
                                     $_.Name
                                 }
                             }
-                            elseif ($blobModifiedDate -gt $after) {
-                                $_.Name
-                            }
-                        }
-                        else {
-                            $blobModifiedDate = [DateTime]::Parse($_.Properties."Last-Modified")
-                            if ($blobModifiedDate -lt $before) {
-                                $_.Name
+                            else {
+                                $blobModifiedDate = [DateTime]::Parse($_.Properties."Last-Modified")
+                                if ($blobModifiedDate -lt $before) {
+                                    $_.Name
+                                }
                             }
                         }
                     }
+                    else {
+                        $artifacts += $enumerationResults.Blobs.Blob.Name
+                    }
                 }
-                else {
-                    $artifacts += $enumerationResults.Blobs.Blob.Name
+                $nextMarker = $enumerationResults.NextMarker
+                if ($nextMarker) {
+                    $nextMarker = "&marker=$nextMarker"
                 }
             }
-            $nextMarker = $enumerationResults.NextMarker
-            if ($nextMarker) {
-                $nextMarker = "&marker=$nextMarker"
+            catch
+            {
+                $downloadAttempt += 1
+                Write-Host "Error querying artifacts. Error message was $($_.Exception.Message)"
+                Write-Host
+
+                if ($downloadAttempt -le $downloadRetryAttempts)
+                {
+                    Write-Host "Repeating download attempt (" $downloadAttempt.ToString() " of " $downloadRetryAttempts.ToString() ")..."
+                    Write-Host
+                }
+                else
+                {
+                    throw
+                }                
             }
         } while ($nextMarker)
 

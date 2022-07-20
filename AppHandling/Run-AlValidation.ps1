@@ -42,6 +42,8 @@
   Array or comma separated list of affixes to use for AppSourceCop validation
  .Parameter supportedCountries
   Array or comma separated list of supportedCountries to use for AppSourceCop validation
+ .Parameter obsoleteTagMinAllowedMajorMinor
+  Objects that are pending obsoletion with an obsolete tag version lower than the minimum set in the AppSourceCop.json file are not allowed. (AS0105)
  .Parameter vsixFile
   Specify a URL or path to a .vsix file in order to override the .vsix file in the image with this.
   Use Get-LatestAlLanguageExtensionUrl to get latest AL Language extension from Marketplace.
@@ -98,6 +100,7 @@ Param(
     $countries,
     $affixes = @(),
     $supportedCountries = @(),
+    [string] $obsoleteTagMinAllowedMajorMinor = "",
     [string] $vsixFile = "",
     [switch] $skipVerification,
     [switch] $skipUpgrade,
@@ -119,7 +122,8 @@ function DetermineArtifactsToUse {
         [string] $version = "",
         [string] $select = "Current",
         [string] $sasToken = "",
-        [string[]] $countries = @("us")
+        [string[]] $countries = @("us"),
+        [switch] $throw
     )
 
 Write-Host -ForegroundColor Yellow @'
@@ -139,25 +143,35 @@ Write-Host -ForegroundColor Yellow @'
         $minver = $null
         $countries | ForEach-Object {
             $url = Get-BCArtifactUrl -version $version -country $_ -select $select -sasToken $sasToken | Select-Object -First 1
-            Write-Host "Found $($url.Split('?')[0])"
-            if ($url) {
-                $ver = [Version]$url.Split('/')[4]
-                if ($minver -eq $null -or $ver -lt $minver) {
-                    $minver = $ver
-                    $minsto = $url.Split('/')[2].Split('.')[0]
-                    $minsel = "Latest"
-                    $mintok = $url.Split('?')[1]; if ($mintok) { $mintok = "?$mintok" }
+            if (!($url)) {
+                Write-Host -ForegroundColor Yellow "WARNING: NextMajor artifacts doesn't exist for $_"
+            }
+            else {
+                Write-Host "Found $($url.Split('?')[0])"
+                if ($url) {
+                    $ver = [Version]$url.Split('/')[4]
+                    if ($minver -eq $null -or $ver -lt $minver) {
+                        $minver = $ver
+                        $minsto = $url.Split('/')[2].Split('.')[0]
+                        $minsel = "Latest"
+                        $mintok = $url.Split('?')[1]; if ($mintok) { $mintok = "?$mintok" }
+                    }
                 }
             }
         }
         if ($minver -eq $null) {
-            throw "Unable to locate artifacts"
+            if ($throw) {
+                throw "Unable to locate artifacts"
+            }
+            return ""
         }
-        $version = $minver.ToString()
+        else {
+            $version = $minver.ToString()
+        }
     }
     $artifactUrl = Get-BCArtifactUrl -storageAccount $minsto -version $version -country $countries[0] -select $minsel -sasToken $mintok | Select-Object -First 1
     if (!($artifactUrl)) {
-        throw "Unable to locate artifacts"
+        if ($throw) { throw "Unable to locate artifacts" }
     }
     Write-Host "Using $($artifactUrl.Split('?')[0])"
     $artifactUrl
@@ -208,7 +222,7 @@ function GetFilePath( [string] $path ) {
 $telemetryScope = InitTelemetryScope -name $MyInvocation.InvocationName -parameterValues $PSBoundParameters -includeParameters @()
 try {
 
-'GetBcContainerAppInfo','PublishBcContainerApp','multitenant','SkipConnectionTest','skipUpgrade','SkipVerification','ImageName','LicenseFile' | % {
+'GetBcContainerAppInfo','PublishBcContainerApp','multitenant','SkipConnectionTest','skipUpgrade','ImageName','LicenseFile' | % {
     if ($PSBoundParameters.Keys.Contains($_)) {
         Write-Host -ForegroundColor Red "WARNING: Parameter $_ is no longer used in Run-AlValidation, please remove the parameter"
     }
@@ -262,8 +276,8 @@ Write-Host -ForegroundColor Yellow @'
  |_|   \__,_|_|  \__,_|_| |_| |_|\___|\__\___|_|  |___/
 
 '@
-Write-Host -NoNewLine -ForegroundColor Yellow "Container name               "; Write-Host $containerName
-Write-Host -NoNewLine -ForegroundColor Yellow "Credential                   ";
+Write-Host -NoNewLine -ForegroundColor Yellow "Container name                  "; Write-Host $containerName
+Write-Host -NoNewLine -ForegroundColor Yellow "Credential                      ";
 if ($credential) {
     Write-Host "Specified"
 }
@@ -272,17 +286,18 @@ else {
     Write-Host "admin/$password"
     $credential= (New-Object pscredential 'admin', (ConvertTo-SecureString -String $password -AsPlainText -Force))
 }
-Write-Host -NoNewLine -ForegroundColor Yellow "MemoryLimit                  "; Write-Host $memoryLimit
-Write-Host -NoNewLine -ForegroundColor Yellow "validateVersion              "; Write-Host $validateVersion
-Write-Host -NoNewLine -ForegroundColor Yellow "validateCurrent              "; Write-Host $validateCurrent
-Write-Host -NoNewLine -ForegroundColor Yellow "validateNextMinor            "; Write-Host $validateNextMinor
-Write-Host -NoNewLine -ForegroundColor Yellow "validateNextMajor            "; Write-Host $validateNextMajor
-Write-Host -NoNewLine -ForegroundColor Yellow "SasToken                     "; if ($sasToken) { Write-Host "Specified" } else { Write-Host "Not Specified" }
-Write-Host -NoNewLine -ForegroundColor Yellow "countries                    "; Write-Host ([string]::Join(',',$countries))
-Write-Host -NoNewLine -ForegroundColor Yellow "validateCountries            "; Write-Host ([string]::Join(',',$validateCountries))
-Write-Host -NoNewLine -ForegroundColor Yellow "affixes                      "; Write-Host ([string]::Join(',',$affixes))
-Write-Host -NoNewLine -ForegroundColor Yellow "supportedCountries           "; Write-Host ([string]::Join(',',$supportedCountries))
-Write-Host -NoNewLine -ForegroundColor Yellow "vsixFile                     "; Write-Host $vsixFile
+Write-Host -NoNewLine -ForegroundColor Yellow "MemoryLimit                     "; Write-Host $memoryLimit
+Write-Host -NoNewLine -ForegroundColor Yellow "validateVersion                 "; Write-Host $validateVersion
+Write-Host -NoNewLine -ForegroundColor Yellow "validateCurrent                 "; Write-Host $validateCurrent
+Write-Host -NoNewLine -ForegroundColor Yellow "validateNextMinor               "; Write-Host $validateNextMinor
+Write-Host -NoNewLine -ForegroundColor Yellow "validateNextMajor               "; Write-Host $validateNextMajor
+Write-Host -NoNewLine -ForegroundColor Yellow "SasToken                        "; if ($sasToken) { Write-Host "Specified" } else { Write-Host "Not Specified" }
+Write-Host -NoNewLine -ForegroundColor Yellow "countries                       "; Write-Host ([string]::Join(',',$countries))
+Write-Host -NoNewLine -ForegroundColor Yellow "validateCountries               "; Write-Host ([string]::Join(',',$validateCountries))
+Write-Host -NoNewLine -ForegroundColor Yellow "affixes                         "; Write-Host ([string]::Join(',',$affixes))
+Write-Host -NoNewLine -ForegroundColor Yellow "supportedCountries              "; Write-Host ([string]::Join(',',$supportedCountries))
+Write-Host -NoNewLine -ForegroundColor Yellow "ObsoleteTagMinAllowedMajorMinor "; Write-Host $obsoleteTagMinAllowedMajorMinor
+Write-Host -NoNewLine -ForegroundColor Yellow "vsixFile                        "; Write-Host $vsixFile
 
 Write-Host -ForegroundColor Yellow "Install Apps"
 if ($installApps) { $installApps | ForEach-Object { Write-Host "- $_" } } else { Write-Host "- None" }
@@ -377,11 +392,18 @@ Measure-Command {
 0..3 | ForEach-Object {
 
 $artifactUrl = ""
+$useVsix = ""
 if ($_ -eq 0 -and $validateCurrent) {
     if ($currentArtifactUrl -eq "") {
-        $currentArtifactUrl = DetermineArtifactsToUse -countries $validateCountries -select Current
+        $currentArtifactUrl = DetermineArtifactsToUse -countries $validateCountries -select Current -throw
     }
     $artifactUrl = $currentArtifactUrl
+    if ($vsixFile) {
+        if ($vsixFile -ne ".") { $useVsix = $vsixFile }
+    }
+    else {
+        $useVsix = $latestAlLanguageUrl
+    }
 }
 elseif ($_ -eq 1 -and $validateVersion) {
     $artifactUrl = DetermineArtifactsToUse -version $validateVersion -countries $validateCountries -select Latest
@@ -389,7 +411,7 @@ elseif ($_ -eq 1 -and $validateVersion) {
 elseif ($_ -eq 2 -and $validateNextMinor) {
     $artifactUrl = DetermineArtifactsToUse -countries $validateCountries -select NextMinor -sasToken $sasToken
 }
-elseif ($_ -eq 1 -and $validateNextMajor) {
+elseif ($_ -eq 3 -and $validateNextMajor) {
     $artifactUrl = DetermineArtifactsToUse -countries $validateCountries -select NextMajor -sasToken $sasToken
 }
 
@@ -424,21 +446,6 @@ Measure-Command {
     $artifactSegments = $artifactUrl.Split('?')[0].Split('/')
     $artifactUrl = $artifactUrl.Replace("/$($artifactSegments[4])/$($artifactSegments[5])","/$($artifactSegments[4])/$validateCountry")
     Write-Host -ForegroundColor Yellow "Creating container for country $validateCountry"
-
-    if ($vsixFile -eq ".") {
-        $useVsix = ""
-    }
-    elseif ($vsixFile -eq "") {
-        if (($artifactSegments[2] -like "bcinsider.*") -or ($artifactSegments[2] -like "bcpublicpreview.*")) {
-            $useVsix = ""
-        }
-        else {
-            $useVsix = $latestAlLanguageUrl
-        }
-    }
-    else {
-        $useVsix = $vsixFile
-    }
 
     $Parameters = @{
         "accept_eula" = $true
@@ -482,11 +489,13 @@ $parameters = @{
     "apps" = @($apps)
     "affixes" = $affixes
     "supportedCountries" = $supportedCountries
+    "ObsoleteTagMinAllowedMajorMinor" = $ObsoleteTagMinAllowedMajorMinor
     "enableAppSourceCop" = $true
     "failOnError" = $failOnError
     "ignoreWarnings" = !$includeWarnings
     "doNotIgnoreInfos" = $doNotIgnoreInfos
     "appPackagesFolder" = $appPackagesFolder
+    "skipVerification" = $skipVerification
 }
 if ($CompileAppInBcContainer) {
     $parameters += @{
@@ -502,9 +511,9 @@ $validationResult += @(Run-AlCops @Parameters)
 }
 
 } catch {
-    $error = "Unexpected error while validating app. Error is: $($_.Exception.Message)"
-    $validationResult += $error
-    Write-Host -ForegroundColor Red $error
+    $err = "Unexpected error while validating app. Error is: $($_.Exception.Message)"
+    $validationResult += $err
+    Write-Host -ForegroundColor Red $err
     Write-Host -ForegroundColor Red $_.ScriptStackTrace
 
 }

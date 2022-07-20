@@ -3,6 +3,10 @@
   Preview function for Converting BC Apps to Runtime Packages
  .Description
   Preview function for Converting BC Apps to Runtime Packages
+ .Parameter showMyCode
+  Include this switch if you want to include the app's source code in the runtime package.
+ .Parameter includeSourceInPackageFile
+  Include this switch if you want to include source code in the runtime package.
  .Parameter skipFailingApps
   If set, a failing app (compiler error or anything else) does not stop the whole process but continues with the next app.
  .Parameter afterEachRuntimeCreation
@@ -27,6 +31,8 @@ function Convert-BcAppsToRuntimePackages {
         $apps,
         [Parameter(Mandatory=$false)]
         $destinationFolder = "",
+        [bool] $includeSourceInPackageFile,
+        [bool] $showMyCode,
         [switch] $skipVerification,
         [switch] $skipFailingApps,
         [scriptblock] $afterEachRuntimeCreation = {}
@@ -37,6 +43,7 @@ try {
 
     $appsFolder = Join-Path (Get-TempDir) ([Guid]::NewGuid().ToString())
     try {
+
         $apps = @(Sort-AppFilesByDependencies -appFiles (CopyAppFilesToFolder -appFiles $apps -folder $appsFolder) -WarningAction SilentlyContinue)
         if ($apps.Count -eq 0) {
             throw "No apps specified"
@@ -99,42 +106,55 @@ try {
         }
     
         $apps | ForEach-Object {
-            $appFile = $_;
+            $appFile = $_
 
             try {
-                $afterEachRuntimeCreationParameters = @{ 'appFile' = $appFile; };
+                $afterEachRuntimeCreationParameters = @{ 'appFile' = $appFile }
 
-                $runtimeFileName = Invoke-ScriptInBcContainer -containerName $containerName -scriptblock { Param($appFile, $destinationFolder, $bcVersion, $skipVerification)
-                    Write-Host "Publishing $([System.IO.Path]::GetFileName($appFile))";
+                $runtimeFileName = Invoke-ScriptInBcContainer -containerName $containerName -scriptblock { Param($appFile, $destinationFolder, $bcVersion, $skipVerification, $showMyCode, $isShowMyCodePresent, $includeSourceInPackageFile, $isIncludeSourceInPackageFilePresent)
+                    Write-Host "Publishing $([System.IO.Path]::GetFileName($appFile))"
 
-                    Publish-NavApp -ServerInstance $serverInstance -path $appFile -skipVerification:$skipVerification -packageType Extension;
-                    $navAppInfo = Get-NAVAppInfo -Path $appFile;
-                    $appPublisher = $navAppInfo.Publisher;
-                    $appName = $navAppInfo.Name;
-                    $appVersion = $navAppInfo.Version;
-                    $appFileName = "$($appPublisher)_$($appName)_$($appVersion).runtime-$($bcVersion).app".Split([System.IO.Path]::GetInvalidFileNameChars()) -join '';
-                    Write-Host "Creating Runtime Package $([System.IO.Path]::GetFileName($appFileName))";
-                    Get-NavAppRuntimePackage -ServerInstance $serverInstance -appName $appName -appPublisher $appPublisher -appVersion $appVersion -Path (Join-Path $destinationFolder $appFileName);
+                    Publish-NavApp -ServerInstance $serverInstance -path $appFile -skipVerification:$skipVerification -packageType Extension
+                    $navAppInfo = Get-NAVAppInfo -Path $appFile
 
-                    return $appFileName;
-                } -argumentList (Get-BcContainerPath -containerName $containerName -path $appFile), (Get-BcContainerPath -containerName $containerName -path $destinationFolder), $bcVersion, $skipVerification;
+                    $appPublisher = $navAppInfo.Publisher
+                    $appName = $navAppInfo.Name
+                    $appVersion = $navAppInfo.Version
+                    $appFileName = "$($appPublisher)_$($appName)_$($appVersion).runtime-$($bcVersion).app".Split([System.IO.Path]::GetInvalidFileNameChars()) -join ''
+                    $params = @{
+                        "ServerInstance" = $serverInstance
+                        "appName" = $appName
+                        "appPublisher" = $appPublisher
+                        "appVersion" = $appVersion
+                        "path" = (Join-Path $destinationFolder $appFileName)
+                    }
+                    if ($isShowMyCodePresent) {
+                        $params += @{ "showMyCode" = $showMyCode }
+                    }
+                    if ($isIncludeSourceInPackageFilePresent) {
+                        $params += @{ "includeSourceInPackageFile" = $includeSourceInPackageFile }
+                    }
+                    Write-Host "Creating Runtime Package $([System.IO.Path]::GetFileName($appFileName))"
+                    Get-NavAppRuntimePackage @params
 
-                $afterEachRuntimeCreationParameters += @{ 'runtimeFile' = (Join-Path -Path $destinationFolder -ChildPath $runtimeFileName); };
+                    return $appFileName
+                } -argumentList (Get-BcContainerPath -containerName $containerName -path $appFile), (Get-BcContainerPath -containerName $containerName -path $destinationFolder), $bcVersion, $skipVerification, $showMyCode, $PSBoundParameters.ContainsKey('ShowMyCode'), $includeSourceInPackageFile, $PSBoundParameters.ContainsKey('includeSourceInPackageFile')
+
+                $afterEachRuntimeCreationParameters += @{ 'runtimeFile' = (Join-Path -Path $destinationFolder -ChildPath $runtimeFileName) }
             }
             catch {
-                if (!$skipFailingApps.IsPresent)
-                {
-                    throw;
+                if (!$skipFailingApps.IsPresent) {
+                    throw
                 }
 
-                Write-Warning -Message "Failed creating Runtime Package for $($appFile).";
-                $afterEachRuntimeCreationParameters += @{ 'runtimeFile' = $null; };
+                Write-Warning -Message "Failed creating Runtime Package for $($appFile)."
+                $afterEachRuntimeCreationParameters += @{ 'runtimeFile' = $null }
             }
 
-            $afterEachRuntimeCreation.Invoke($afterEachRuntimeCreationParameters);
+            $afterEachRuntimeCreation.Invoke($afterEachRuntimeCreationParameters)
         }
     
-        $destinationFolder;
+        $destinationFolder
     }
     finally {
         Remove-BcContainer -containerName $containerName

@@ -100,10 +100,36 @@ function AddTelemetryProperty {
     }
 }
 
+function InitTelemetryClients {
+    Param()
+
+    "Microsoft","Partner" | ForEach-Object {
+        $clientName = "$($_)Client"
+        $telemetryConnectionString = $bcContainerHelperConfig."$($_)TelemetryConnectionString"
+        if ($telemetryConnectionString -and $telemetry.Assembly -ne $null) {
+            if ($telemetry."$clientName" -eq $null -or $telemetry."$ClientName".TelemetryConfiguration.ConnectionString -ne $telemetryConnectionString) {
+                try {
+                    $telemetryConfiguration = $telemetry.Assembly.CreateInstance('Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration')
+                    $telemetryConfiguration.Connectionstring = $telemetryConnectionString
+                    $telemetry."$clientName" = $telemetry.Assembly.CreateInstance('Microsoft.ApplicationInsights.TelemetryClient', $false, 0, $null, $telemetryConfiguration, $null, $null)
+                }
+                catch {
+                    $telemetry."$clientName" = $null
+                }
+            }
+        }
+        else {
+            $telemetry."$clientName" = $null
+        }
+    }
+}
+
 function RegisterTelemetryScope {
     Param(
         [string] $telemetryScopeJson
     )
+
+    InitTelemetryClients
 
     $telemetryScope = $telemetryScopeJson | ConvertFrom-Json
     if ($telemetry.TopId -eq "") { 
@@ -140,25 +166,7 @@ function InitTelemetryScope {
         [string] $eventId = ""
     )
     
-    "Microsoft","Partner" | ForEach-Object {
-        $clientName = "$($_)Client"
-        $telemetryConnectionString = $bcContainerHelperConfig."$($_)TelemetryConnectionString"
-        if ($telemetryConnectionString -and $telemetry.Assembly -ne $null) {
-            if ($telemetry."$clientName" -eq $null -or $telemetry."$ClientName".TelemetryConfiguration.ConnectionString -ne $telemetryConnectionString) {
-                try {
-                    $telemetryConfiguration = $telemetry.Assembly.CreateInstance('Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration')
-                    $telemetryConfiguration.Connectionstring = $telemetryConnectionString
-                    $telemetry."$clientName" = $telemetry.Assembly.CreateInstance('Microsoft.ApplicationInsights.TelemetryClient', $false, 0, $null, $telemetryConfiguration, $null, $null)
-                }
-                catch {
-                    $telemetry."$clientName" = $null
-                }
-            }
-        }
-        else {
-            $telemetry."$clientName" = $null
-        }
-    }
+    InitTelemetryClients
 
     if ($telemetry.MicrosoftClient -ne $null -or $telemetry.PartnerClient -ne $null) {
         if ($eventId -eq "" -and ($eventIds.ContainsKey($name))) {
@@ -224,7 +232,7 @@ function TrackTrace {
             $telemetryScope.Emitted = $true
             try {
                 Stop-Transcript | Out-Null
-                $transcript = (@(Get-Content -Path (Join-Path $env:TEMP $telemetryScope.CorrelationId)) | select -skip 18 | select -skiplast 4) -join "`n"
+                $transcript = (@(Get-Content -Path (Join-Path $env:TEMP $telemetryScope.CorrelationId)) | select -skip 18 | select -skiplast 4 | Where-Object { -not "$_".StartsWith("::add-mask::") }) -join "`n"
                 if ($transcript.Length -gt 32000) {
                     $transcript = "$($transcript.SubString(0,16000))`n`n...`n`n$($transcript.SubString($transcript.Length-16000))"
                 }
@@ -236,7 +244,7 @@ function TrackTrace {
             $telemetryScope.Properties.Add("duration", [DateTime]::Now.Subtract($telemetryScope.StartTime).TotalSeconds)
 
             if ($telemetry.Assembly -ne $null) {
-                $printCorrelationId = $false
+                $printCorrelationId = $telemetry.Debug
                 "Microsoft","Partner" | ForEach-Object {
                     $clientName = "$($_)Client"
                     $extendedTelemetry = $bcContainerHelperConfig.SendExtendedTelemetryToMicrosoft -or $_ -eq "Partner"
@@ -265,6 +273,9 @@ function TrackTrace {
                         $telemetry."$clientName".TrackTrace($traceTelemetry)
                         $telemetry."$clientName".Flush()
                         if ($extendedTelemetry) { $printCorrelationId = $true }
+                        if ($telemetry.Debug) { 
+                            Write-Host "$_ telemetry emitted"
+                        }
                     }
                 }
                 if ($printCorrelationId) {
@@ -304,7 +315,7 @@ function TrackException {
 
             try {
                 Stop-Transcript | Out-Null
-                $transcript = (@(Get-Content -Path (Join-Path $env:TEMP $telemetryScope.CorrelationId)) | select -skip 18 | select -skiplast 4) -join "`n"
+                $transcript = (@(Get-Content -Path (Join-Path $env:TEMP $telemetryScope.CorrelationId)) | select -skip 18 | select -skiplast 4 | Where-Object { -not "$_".StartsWith("::add-mask::") }) -join "`n"
                 if ($transcript.Length -gt 32000) {
                     $transcript = "$($transcript.SubString(0,16000))`n`n...`n`n$($transcript.SubString($transcript.Length-16000))"
                 }

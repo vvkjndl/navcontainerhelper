@@ -44,30 +44,12 @@ try {
         throw "The app ($appFile)needs to be in a folder, which is shared with the container $containerName"
     }
 
-#    $ExtensionsFolder = Join-Path $hosthelperfolder "Extensions"
-#    $sharedPfxFile = Join-Path $ExtensionsFolder "$containerName\my\certificate.pfx"
-#    $removeSharedPfxFile = $true
-#    if ($pfxFile -like "https://*" -or $pfxFile -like "http://*") {
-#        Write-Host "Downloading certificate file to container"
-#        (New-Object System.Net.WebClient).DownloadFile($pfxFile, $sharedPfxFile)
-#    }
-#    else {
-#        if (Get-BcContainerPath -containerName $containerName -path $pfxFile) {
-#            $sharedPfxFile = $pfxFile
-#            $removeSharedPfxFile = $false
-#        }
-#        else {
-#            Write-Host "Copying certificate file to container"
-#            Copy-Item -Path $pfxFile -Destination $sharedPfxFile -Force
-#        }
-#    }
-
     $ExtensionsFolder = Join-Path $hosthelperfolder "Extensions"
     $sharedPfxFile = Join-Path $ExtensionsFolder "$containerName\my\$([GUID]::NewGuid().ToString()).pfx"
     $removeSharedPfxFile = $true
     if ($pfxFile -like "https://*" -or $pfxFile -like "http://*") {
         Write-Host "Downloading certificate file to container"
-        (New-Object System.Net.WebClient).DownloadFile($pfxFile, $sharedPfxFile)
+        Download-File -sourceUrl $pfxFile -destinationFile $sharedPfxFile
     }
     else {
         if (Get-BcContainerPath -containerName $containerName -path $pfxFile) {
@@ -87,6 +69,7 @@ try {
     
             if ($importCertificate) {
                 Import-PfxCertificate -FilePath $pfxFile -Password $pfxPassword -CertStoreLocation "cert:\localMachine\root" | Out-Null
+                Import-PfxCertificate -FilePath $pfxFile -Password $pfxPassword -CertStoreLocation "cert:\localMachine\my" | Out-Null
             }
     
             if (!(Test-Path "C:\Windows\System32\msvcr120.dll")) {
@@ -114,7 +97,7 @@ try {
                 }
                 $signToolExe = (get-item "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\SignTool.exe").FullName
             }
-    
+
             Write-Host "Signing $appFile"
             $unsecurepassword = ([System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($pfxPassword)))
             $attempt = 1

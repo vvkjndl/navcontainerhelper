@@ -247,14 +247,17 @@ function Enter-Value {
         }
         else {
             if ($options) {
-                $answer = $options | Where-Object { $_ -like "$selection*" }
+                $answer = $options | Where-Object { $_ -eq $selection }
                 if (-not ($answer)) {
-                    Write-Host -ForegroundColor Red "Illegal answer. Please answer one of the options."
-                }
-                elseif ($answer -is [Array]) {
-                    Write-Host -ForegroundColor Red "Multiple options match the answer. Please answer one of the options that matched the previous selection."
-                    $options = $answer
-                    $answer = $null
+                    $answer = $options | Where-Object { $_ -like "$selection*" }
+                    if (-not ($answer)) {
+                        Write-Host -ForegroundColor Red "Illegal answer. Please answer one of the options."
+                    }
+                    elseif ($answer -is [Array]) {
+                        Write-Host -ForegroundColor Red "Multiple options match the answer. Please answer one of the options that matched the previous selection."
+                        $options = $answer
+                        $answer = $null
+                    }
                 }
             }
             else {
@@ -691,7 +694,7 @@ $Step.Country {
 
     $versionno = $version
     if ($versionno -eq "") {
-        $versionno = (Get-BcArtifactUrl -storageAccount $storageAccount -type $type -country "w1" -sasToken $sasToken).split('/')[4]
+        $versionno = (Get-BcArtifactUrl -storageAccount $storageAccount -type $type -country "$(if ($type -eq 'sandbox') {"at"} else {"us"})" -sasToken $sasToken).split('/')[4]
     }
     $majorVersion = [int]($versionno.Split('.')[0])
     $countries = @()
@@ -1221,7 +1224,7 @@ $Step.Isolation {
         $description = "Containers can run in process isolation or hyperv isolation, see more here: https://docs.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/hyperv-container`nIf not specified, the ContainerHelper will try to detect which isolation mode will work for your OS.`nIf an image with a matching OS is found, Process isolation will be favoured, else Hyper-V will be selected.`n`nYour host OS is Windows $($hostOSVersion.ToString())`n$bestContainerOS`n"
 
         if ($isAdministrator) {
-            $hyperv = Get-WindowsOptionalFeature -FeatureName Microsoft-Hyper-V-All -Online
+            $hyperv = Get-WindowsOptionalFeature -FeatureName Microsoft-Hyper-V -Online
             if ($hyperv) {
                 $description += "Hyper-V is enabled"
             }

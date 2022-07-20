@@ -27,6 +27,8 @@
   Adding this parameter creates an image with multitenancy
  .Parameter addFontsFromPath
   Enumerate all fonts from this path or array of paths and install them in the container
+ .Parameter runSandboxAsOnPrem
+  This parameter will attempt to run sandbox artifacts as onprem (will only work with version 18 and later)
 #>
 function New-BcImage {
     Param (
@@ -49,6 +51,7 @@ function New-BcImage {
         [switch] $includeTestFrameworkOnly,
         [switch] $includePerformanceToolkit,
         [switch] $skipIfImageAlreadyExists,
+        [switch] $runSandboxAsOnPrem,
         $allImages
     )
 
@@ -174,7 +177,7 @@ try {
 
     $appManifestPath = Join-Path $appArtifactPath "manifest.json"
     $appManifest = Get-Content $appManifestPath | ConvertFrom-Json
-    if ($appManifest.PSObject.Properties.name -eq "isBcSandbox") {
+    if (!$runSandboxAsOnPrem -and $appManifest.PSObject.Properties.name -eq "isBcSandbox") {
         if ($appManifest.isBcSandbox) {
             if (!($PSBoundParameters.ContainsKey('multitenant')) -and !$skipDatabase) {
                 $multitenant = $bcContainerHelperConfig.sandboxContainersAreMultitenantByDefault
@@ -370,11 +373,13 @@ try {
                 }
             }
             elseif ($hostOsVersion.Build -ge 20348 -and $containerOsVersion.Build -ge 20348) {
-                if ($containerOsVersion -le $hostOsVersion) {
-                    $isolation = "process"
-                }
-                else {
-                    $isolation = "hyperv"
+                if ($isolation -eq "") {
+                    if ($containerOsVersion -le $hostOsVersion) {
+                        $isolation = "process"
+                    }
+                    else {
+                        $isolation = "hyperv"
+                    }
                 }
             }
             elseif ("$hostOsVersion".StartsWith('10.0.19043.') -and "$containerOsVersion".StartsWith("10.0.19041.")) {
@@ -479,7 +484,7 @@ try {
                 get-childitem -Path $myfolder | % { Write-Host "- $($_.Name)" }
         
                 $isBcSandbox = "N"
-                if ($appManifest.PSObject.Properties.name -eq "isBcSandbox") {
+                if (!$runSandboxAsOnPrem -and $appManifest.PSObject.Properties.name -eq "isBcSandbox") {
                     if ($appManifest.isBcSandbox) {
                         $IsBcSandbox = "Y"
                     }
@@ -623,7 +628,7 @@ LABEL legal="http://go.microsoft.com/fwlink/?LinkId=837447" \
 
                 $success = $false
                 try {
-                    docker build --isolation=$isolation --memory $memory --tag $imageName $buildFolder | % {
+                    docker build --isolation=$isolation --memory $memory --no-cache --tag $imageName $buildFolder | % {
                         $_ | Out-Host
                         if ($_ -like "Successfully built*") {
                             $success = $true

@@ -44,7 +44,7 @@ try {
         $spaces += '   '
     }
 
-    # Create outputFolder if not exits 
+    # Create outputFolder if not exits
     if (!(Test-Path $outputFolder)) {
         New-Item -Path $outputFolder -ItemType Directory -Force | Out-Null
     }
@@ -91,14 +91,19 @@ try {
             else {
                 $appJson = [System.IO.File]::ReadAllLines($_) | ConvertFrom-Json
             }
+            if ($appJson.psobject.Properties.name -contains "id" -and $lvl -eq 0) {
+                $ignoredDependencies += $appJson.Id
+                Write-Host "Added $($appJson.Id) to ignored apps";
+            }
             if ($appJson.psobject.Properties.name -contains "dependencies") {
-                if ($appJson.psobject.Properties.name -contains "id" -and $lvl -eq 0) {
-                    $ignoredDependencies += $appJson.Id
-                }
                 #Resolving dpendencies
                 $appJson.dependencies | % {
                     if ($_.psobject.Properties.name -contains "id") {
                         $id = $_.id
+                    } elseif($_.psobject.Properties.name -contains "appId") {
+                        $id = $_.appId
+                    }
+                    if ($null -ne $id) {
                         if ($id -notin $ignoredDependencies) {
                             try {
                                 $tempAppDependencyFolder = Join-Path $tempAppDependenciesFolder $id
@@ -128,7 +133,7 @@ try {
                                     if (!(Test-Path (Join-Path $outputFolder $dep.Name))) {
                                         Copy-Item -Path $dep -Destination $outputFolder -Force
 
-                                        Write-Host "$($spaces)Copied to $($outputFolder)" 
+                                        Write-Host "$($spaces)Copied to $($outputFolder)"
 
                                         Resolve-DependenciesFromAzureFeed -organization $organization -feed $feed -outputFolder $outputFolder -appsFolder $tempAppDependencyFolder -lvl $lvl -runtimePackages:$runtimePackages
                                     }
